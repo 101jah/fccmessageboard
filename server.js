@@ -1,29 +1,6 @@
 "use strict";
 let mongodb = require("mongodb");
 let mongoose = require("mongoose");
-require('dotenv').config();
-const express     = require('express');
-const bodyParser  = require('body-parser');
-const cors        = require('cors');
-const apiRoutes         = require('./routes/api.js');
-const fccTestingRoutes  = require('./routes/fcctesting.js');
-const runner            = require('./test-runner');
-
-const app = express();
-
-// Security headers middleware
-app.use((req, res, next) => {
-  // Only allow your site to be loaded in an iFrame on your own pages
-  res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
-  
-  // Do not allow DNS prefetching
-  res.setHeader("X-DNS-Prefetch-Control", "off");
-  
-  // Only allow your site to send the referrer for your own pages
-  res.setHeader("Referrer-Policy", "same-origin");
-
-  next();
-});
 
 module.exports = function (app) {
   let uri = process.env.MONGO_URI;
@@ -108,7 +85,6 @@ module.exports = function (app) {
       response.status(500).send("Error updating thread with reply");
     }
   });
-
   app.get("/api/threads/:board", async (request, response) => {
     try {
       let threads = await Thread.find({ board: request.params.board })
@@ -134,7 +110,6 @@ module.exports = function (app) {
       response.status(500).send("Error fetching threads");
     }
   });
-
   app.get("/api/replies/:board", async (request, response) => {
     try {
       let thread = await Thread.findOne({
