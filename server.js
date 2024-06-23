@@ -1,65 +1,140 @@
-'use strict';
-require('dotenv').config();
-const express     = require('express');
-const bodyParser  = require('body-parser');
-const cors        = require('cors');
+"use strict";
+let mongodb = require("mongodb");
+let mongoose = require("mongoose");
 
-const apiRoutes         = require('./routes/api.js');
-const fccTestingRoutes  = require('./routes/fcctesting.js');
-const runner            = require('./test-runner');
+module.exports = function (app) {
+  let uri = process.env.MONGO_URI;
+  console.log("Connecting to MongoDB with URI:", uri);
 
-const app = express();
+  mongoose
+    .connect(uri, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    })
+    .then(() => console.log("MongoDB connected successfully"))
+    .catch((err) => console.log("MongoDB connection error:", err));
 
-app.use('/public', express.static(process.cwd() + '/public'));
-
-app.use(cors({origin: '*'})); //For FCC testing purposes only
-
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-//Sample front-end
-app.route('/b/:board/')
-  .get(function (req, res) {
-    res.sendFile(process.cwd() + '/views/board.html');
-  });
-app.route('/b/:board/:threadid')
-  .get(function (req, res) {
-    res.sendFile(process.cwd() + '/views/thread.html');
+  let replySchema = new mongoose.Schema({
+    text: { type: String, required: true },
+    delete_password: { type: String, required: true },
+    createdon_: { type: Date, required: true },
+    reported: { type: Boolean, required: true },
   });
 
-//Index page (static HTML)
-app.route('/')
-  .get(function (req, res) {
-    res.sendFile(process.cwd() + '/views/index.html');
+  let threadSchema = new mongoose.Schema({
+    text: { type: String, required: true },
+    delete_password: { type: String, required: true },
+    board: { type: String, required: true },
+    createdon_: { type: Date, required: true },
+    bumpedon_: { type: Date, required: true },
+    reported: { type: Boolean, required: true },
+    replies: [replySchema],
   });
 
-//For FCC testing purposes
-fccTestingRoutes(app);
+  let Reply = mongoose.model("Reply", replySchema);
+  let Thread = mongoose.model("Thread", threadSchema);
 
-//Routing for API 
-apiRoutes(app);
+  app.post("/api/threads/:board", async (request, response) => {
+    let newThread = new Thread(request.body);
+    if (!newThread.board || newThread.board === "") {
+      newThread.board = request.params.board;
+    }
+    newThread.createdon_ = new Date();
+    newThread.bumpedon_ = new Date();
+    newThread.reported = false;
+    newThread.replies = [];
 
-//404 Not Found Middleware
-app.use(function(req, res, next) {
-  res.status(404)
-    .type('text')
-    .send('Not Found');
-});
+    try {
+      let savedThread = await newThread.save();
+      console.log("Thread saved successfully:", savedThread);
+      const baseUrl = `${request.protocol}://${request.get("host")}`;
+      const redirectUrl = `${baseUrl}/b/${savedThread.board}/${savedThread._id}`;
+      console.log("Redirecting to:", redirectUrl);
+      response.redirect(redirectUrl);
+    } catch (error) {
+      console.log("Error saving thread:", error);
+      response.status(500).send("Error saving thread");
+    }
+  });
 
-//Start our server and tests!
-const listener = app.listen(process.env.PORT || 3000, function () {
-  console.log('Your app is listening on port ' + listener.address().port);
-  if(process.env.NODE_ENV==='test') {
-    console.log('Running Tests...');
-    setTimeout(function () {
-      try {
-        runner.run();
-      } catch(e) {
-        console.log('Tests are not valid:');
-        console.error(e);
+  app.post("/api/replies/:board", async (request, response) => {
+    let newReply = new Reply({
+      text: request.body.text,
+      delete_password: request.body.delete_password,
+    });
+    newReply.createdon_ = new Date();
+    newReply.reported = false;
+
+    try {
+      let updatedThread = await Thread.findByIdAndUpdate(
+        request.body.thread_id,
+        { $push: { replies: newReply }, bumpedon_: new Date() },
+        { new: true },
+      );
+
+      if (updatedThread) {
+        const baseUrl = `${request.protocol}://${request.get("host")}`;
+        const redirectUrl = `${baseUrl}/b/${updatedThread.board}/${updatedThread._id}?new_reply_id=${newReply._id}`;
+        console.log("Redirecting to:", redirectUrl);
+        response.redirect(redirectUrl);
+      } else {
+        response.status(404).send("Thread not found");
       }
-    }, 1500);
-  }
-});
+    } catch (error) {
+      console.log("Error updating thread with reply:", error);
+      response.status(500).send("Error updating thread with reply");
+    }
+  });
+  app.get("/api/threads/:board", async (request, response) => {
+    try {
+      let threads = await Thread.find({ board: request.params.board })
+        .sort({ bumpedon_: -1 })
+        .limit(10)
+        .lean(); // lean() returns plain JavaScript objects, making it easier to modify
 
-module.exports = app; //for testing
+      threads.forEach((thread) => {
+        thread.replies = thread.replies
+          .sort((a, b) => b.createdon_ - a.createdon_)
+          .slice(0, 3);
+        delete thread.reported;
+        delete thread.delete_password;
+        thread.replies.forEach((reply) => {
+          delete reply.reported;
+          delete reply.delete_password;
+        });
+      });
+
+      response.json(threads);
+    } catch (error) {
+      console.log("Error fetching threads:", error);
+      response.status(500).send("Error fetching threads");
+    }
+  });
+  app.get("/api/replies/:board", async (request, response) => {
+    try {
+      let thread = await Thread.findOne({
+        _id: request.query.thread_id,
+        board: request.params.board,
+      }).lean();
+
+      if (thread) {
+        delete thread.reported;
+        delete thread.delete_password;
+
+        thread.replies.forEach((reply) => {
+          delete reply.reported;
+          delete reply.delete_password;
+        });
+
+        response.json(thread);
+      } else {
+        response.status(404).send("Thread not found");
+      }
+    } catch (error) {
+      console.log("Error fetching thread:", error);
+      response.status(500).send("Error fetching thread");
+    }
+  });
+
+  // Other routes can be added here
+};
